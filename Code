@@ -1,0 +1,217 @@
+import json
+from pathlib import Path
+
+import streamlit as st
+from rapidfuzz import fuzz, process
+
+# ---------- App config ----------
+st.set_page_config("Campus Guide — Demo", layout="wide")
+
+BASE = Path(__file__).resolve().parent
+KB_PATH = BASE / "kb.json"
+
+# ---------- Default knowledge base ----------
+DEFAULT_KB = {
+    "labs": {
+        "python lab": {
+            "location": "Block A, Room 102",
+            "hours": "8:30 — 17:00 (Mon–Fri)",
+            "contact": "Dr. Rao, rao@uni.edu",
+            "notes": "Linux machines, VS Code, Python 3.11, pip available."
+        },
+        "ai ml lab": {
+            "location": "Block B, Room 201",
+            "hours": "9:00 — 18:00 (Mon–Sat)",
+            "contact": "Prof. Mehta, mehta@uni.edu",
+            "notes": "GPU cluster access required — request via ticket."
+        },
+        "c lab": {
+            "location": "Block A, Room 103",
+            "hours": "8:30 — 16:30 (Mon–Fri)",
+            "contact": "Ms. Das, das@uni.edu",
+            "notes": "GCC, Code::Blocks installed. Debugger available."
+        },
+    },
+    "facilities": {
+        "canteen": {
+            "location": "Ground Floor, South Wing",
+            "hours": "8:00 — 20:00",
+            "contact": "canteen@uni.edu",
+            "notes": "Veg and non-veg options; student discount at lunch."
+        },
+        "gym": {
+            "location": "Block C, Basement",
+            "hours": "6:00 — 22:00",
+            "contact": "gym@uni.edu",
+            "notes": "Requires membership card scanned at entry."
+        },
+        "dean office": {
+            "location": "Admin Block, Room 1",
+            "hours": "9:00 — 17:00",
+            "contact": "dean@uni.edu",
+            "notes": "By appointment only."
+        },
+    },
+    "clubs": {
+        "coding club": {
+            "meeting": "Fridays 4 pm, Block D, Room 12",
+            "contact": "codingclub@uni.edu",
+            "notes": "Open to all CS students; hackathons twice per semester."
+        },
+        "python club": {
+            "meeting": "Wednesdays 5 pm, Python Lab",
+            "contact": "pythonclub@uni.edu",
+            "notes": "Beginner-friendly sessions and project help."
+        },
+        "sports club": {
+            "meeting": "Tuesdays 6 pm, Sports Ground",
+            "contact": "sports@uni.edu",
+            "notes": "Football, cricket, badminton — equipment provided."
+        },
+    },
+}
+
+
+# ---------- KB helpers ----------
+def load_kb():
+    if not KB_PATH.exists():
+        with open(KB_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_KB, f, indent=2)
+    with open(KB_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_kb(kb):
+    with open(KB_PATH, "w", encoding="utf-8") as f:
+        json.dump(kb, f, indent=2)
+
+
+def search_kb(kb, query, top_n=5):
+    query = query.lower().strip()
+    candidates = []
+
+    for cat, items in kb.items():
+        for key, info in items.items():
+            candidates.append((f"{cat}::{key}", key, cat, info))
+
+    if not candidates:
+        return []
+
+    choices = {c[0]: c for c in candidates}
+    labels = list(choices.keys())
+
+    results = process.extract(query, labels, scorer=fuzz.WRatio, limit=top_n)
+
+    out = []
+    for label, score, _ in results:
+        _, key, cat, info = choices[label]
+        out.append({"category": cat, "key": key, "score": score, "info": info})
+    return out
+
+
+# ---------- UI ----------
+st.title("Campus Guide — Demo")
+
+col_left, col_main, col_right = st.columns([1, 2, 1])
+
+kb = load_kb()
+
+with col_left:
+    st.header("Browse")
+    category = st.radio("Pick category:", ["labs", "facilities", "clubs"])
+    st.write("Quick links")
+
+    for k in sorted(kb.get(category, {}).keys()):
+        if st.button(k.title(), key=f"browse_{category}_{k}"):
+            st.session_state["_cg_selected"] = (category, k)
+
+with col_main:
+    st.header("Ask the Campus Guide")
+    st.write("Try queries like: 'Where is the AI lab?', 'gym hours', 'canteen timings'.")
+
+    query = st.text_input("Your question or search query")
+
+    if st.button("Search"):
+        kb = load_kb()
+        if not query.strip():
+            st.info("Please type a search term.")
+        else:
+            results = search_kb(kb, query, top_n=5)
+            if not results:
+                st.info("No results found. Use the Admin panel to add information.")
+            else:
+                st.success("Top matches:")
+                for r in results:
+                    st.markdown(f"**{r['key'].title()}** — *{r['category'].title()}* (score: {r['score']})")
+                    info = r["info"]
+                    for k, v in info.items():
+                        st.write(f"- **{k.title()}:** {v}")
+                    st.markdown("---")
+
+    sel = st.session_state.get("_cg_selected")
+    if sel:
+        cat, key = sel
+        kb = load_kb()
+        if cat in kb and key in kb[cat]:
+            st.markdown(f"### {key.title()} — {cat.title()}")
+            info = kb[cat][key]
+            for k, v in info.items():
+                st.write(f"- **{k.title()}:** {v}")
+            if st.button("Clear selection"):
+                st.session_state.pop("_cg_selected", None)
+
+with col_right:
+    st.header("Admin / Add Info")
+    st.write("Add a new knowledge-base entry.")
+
+    add_cat = st.selectbox("Category", ["labs", "facilities", "clubs"])
+    add_key = st.text_input("Entry key (short name)", placeholder="e.g., 'ai lab'")
+    add_json = st.text_area(
+        "Entry data (JSON object)",
+        height=140,
+        placeholder='{"location": "Block X", "hours": "9–5", "contact": "a@b.com", "notes": "..."}',
+    )
+
+    if st.button("Add entry"):
+        if not add_key.strip() or not add_json.strip():
+            st.warning("Provide both key and JSON data.")
+        else:
+            try:
+                parsed = json.loads(add_json)
+                kb = load_kb()
+                kb.setdefault(add_cat, {})
+                kb[add_cat][add_key.strip().lower()] = parsed
+                save_kb(kb)
+                st.success(f"Saved '{add_key}' in category '{add_cat}'.")
+            except Exception as e:
+                st.error(f"Invalid JSON: {e}")
+
+    st.markdown("---")
+
+    if st.button("Reload KB"):
+        st.experimental_rerun()
+
+    if st.button("Download KB JSON"):
+        kb = load_kb()
+        st.download_button(
+            "Download KB",
+            json.dumps(kb, indent=2).encode("utf-8"),
+            "kb.json",
+            "application/json",
+        )
+
+st.caption("Campus Guide demo — knowledge base stored in kb.json.")
+
+
+{
+  "labs": {
+    "python lab": {
+      "location": "Block A, Room 102",
+      "hours": "8:30 — 17:00 (Mon–Fri)",
+      "contact": "Dr. Rao, rao@uni.edu",
+      "notes": "Linux machines, VS Code, Python 3.11, pip available."
+    }
+  },
+  "facilities": {},
+  "clubs": {}
+}
